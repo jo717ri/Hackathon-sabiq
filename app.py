@@ -137,7 +137,7 @@ ENTERPRISE_HTML = """
         </div>
         <div class="stat-card">
             <div>
-                <div style="font-size: 11px; color: var(--text-muted);">مسار الاعتيادي</div>
+                <div style="font-size: 11px; color: var(--text-muted);">مسار التحويل</div>
                 <div class="stat-value" style="color: var(--accent-red);" id="statRed">0</div>
             </div>
             <i class="fa-solid fa-shield-cat stat-icon" style="color: var(--accent-red);"></i>
@@ -167,7 +167,7 @@ ENTERPRISE_HTML = """
                 <button onclick="checkVehicle()"><i class="fa-solid fa-magnifying-glass"></i> فحص</button>
             </div>
             <p style="font-size: 11px; color: var(--text-muted); margin-top: 8px; text-align: center;">
-                جربي اللوحات التجريبية: <strong>أ ب ج 1234</strong> (أخضر) | <strong>ح خ د 5678</strong> (أصفر) | <strong>ر س ط 9999</strong> (أحمر)
+                جربي اللوحات التجريبية: <strong>أ ب ج 1234</strong> (أخضر) | <strong>د هـ و 7711</strong> (أصفر) | <strong>ر س ط 9999</strong> (أحمر)
             </p>
         </div>
 
@@ -424,8 +424,7 @@ ENTERPRISE_HTML = """
         function updateTrafficTable(timestamp, plate, statusTitle, statusCode, count, token) {
             const table = document.getElementById('trafficLogTable');
             let badgeClass = statusCode === 'GREEN' ? 'badge-green' : (statusCode === 'YELLOW' ? 'badge-yellow' : 'badge-red');
-            let laneText = statusCode === 'GREEN' ? 'المسار الأخضر' : (statusCode === 'YELLOW' ? 'مسار الأولوية' : 'المسار الاعتيادي');
-            
+let laneText = statusCode === 'GREEN' ? 'المسار الأخضر - عبور سريع' : (statusCode === 'YELLOW' ? 'مسار التدقيق والتحقق' : 'المسار الأحمر - تفتيش أمني');            
             const newRow = `
                 <tr>
                     <td>${timestamp}</td>
@@ -741,6 +740,7 @@ def passenger_view():
     </html>
     """
     return render_template_string(passenger_html)
+
 @app.route('/api/verify', methods=['POST'])
 def verify_vehicle():
     data = request.get_json() or {}
@@ -751,9 +751,9 @@ def verify_vehicle():
 
     if not plate:
         return jsonify({
-            'status_code': 'RED',
-            'status_title': 'المسار الاعتيادي - توجيه للتفتيش',
-            'status_desc': 'لم يتم إدخال أو التقاط رقم اللوحة.',
+            'status_code': 'YELLOW',
+            'status_title': 'مسار التدقيق (مركبة غير مسجلة)',
+            'status_desc': 'لم يتم إدخال أو التقط رقم اللوحة، يلزم التدقيق اليدوي.',
             'token': token,
             'timestamp': timestamp,
             'passengers': []
@@ -774,21 +774,20 @@ def verify_vehicle():
     rows = cursor.fetchall()
     conn.close()
 
-    # إذا لم يتم العثور على اللوحة في قاعدة البيانات -> المسار الأحمر
+    # 1. القاعدة الأولى: إذا لم يتم العثور على اللوحة في قاعدة البيانات -> المسار الأصفر (غير مسجل مسبقاً)
     if not rows:
         return jsonify({
-            'status_code': 'RED',
-            'status_title': 'المسار الاعتيادي - توجيه للتفتيش',
-            'status_desc': 'لم يتم العثور على إجراءات تحقق مسبقة لهذه المركبة، يلزم المسار اليدوي.',
+            'status_code': 'YELLOW',
+            'status_title': 'مسار التدقيق - مركبة أو ركاب غير مسجلين',
+            'status_desc': 'لم يتم العثور على إجراءات تحقق مسبقة عبر البوابة الذكية، يلزم التحقق وإضافة البصمة يدوياً.',
             'token': token,
             'timestamp': timestamp,
             'passengers': []
         })
 
-    # تحليل حالة الركاب وتحديد لون المسار تلقائياً
+    # تحليل حالة الركاب
     passengers_list = []
     has_red_flag = False
-    has_yellow_flag = False
 
     for row in rows:
         passengers_list.append({
@@ -798,21 +797,16 @@ def verify_vehicle():
             'match_rate': '98.5%'
         })
 
+        # 2. القاعدة الثانية: الكشف عن القيود الأمنية أو منع السفر الطارئ -> المسار الأحمر
         if row['HasTravelBan'] == 1 or row['HasSecurityRestrictions'] == 1:
             has_red_flag = True
-        elif row['PassportStatus'] != 'Valid' or row['UnpaidFines'] > 0:
-            has_yellow_flag = True
 
-    # اتخاذ القرار بناءً على بيانات الجدول الحقيقية
     if has_red_flag:
         status_code = 'RED'
-        status_title = 'المسار الاعتيادي - توجيه للتفتيش'
-        status_desc = 'توجد قيود أمنية أو منع سفر على أحد الركاب في المركبة.'
-    elif has_yellow_flag:
-        status_code = 'YELLOW'
-        status_title = 'مسار التدقيق السريع (تأكيد بيانات/بصمة)'
-        status_desc = 'يتطلب مطابقة بصمة أحد الركاب أو سداد مخالفات/تحديث الجواز.'
+        status_title = 'مسار التحويل - توجيه للتفتيش الأمني'
+        status_desc = 'توجد قيود أمنية أو منع سفر طارئ على أحد الركاب في المركبة.'
     else:
+        # 3. القاعدة الثالثة: البيانات سليمة والركاب مسجلون مسبقاً -> المسار الأخضر
         status_code = 'GREEN'
         status_title = 'المسار الأخضر - عبور سريع مباشر'
         status_desc = 'تم التحقق المسبق من جميع البيانات والوثائق الحيوية بنجاح.'
